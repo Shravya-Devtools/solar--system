@@ -116,6 +116,14 @@ jobs:
           echo "Waiting for container to start..."
           sleep 15
           wget -q -O - 127.0.0.1:3000/live | grep live
+      - name: Push Docker Image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          tags: ${{ vars.DOCKERHUB_USERNAME }}/solar-system:${{ github.sha }}
+          load: false
+ 
           
       
  
