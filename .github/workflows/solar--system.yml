@@ -164,5 +164,5 @@ jobs:
         with:
           app-name: solar-system       # your Azure Web App name
           publish-profile: ${{ secrets.AZURE_WEBAPP_PUBLISH_PROFILE }}
-          images: ${{ vars.DOCKERHUB_USERNAME }}/solar-system:${{ github.sha }}
+          images: ${{ vars.DOCKERHUB_USERNAME }}/solar--system:${{ github.sha }}
           slot-name: production
