@@ -1,17 +1,17 @@
 name: service container
- 
+
 on:
   workflow_dispatch:
   push:
     branches:
       - main
       - 'feature/*'
- 
+
 env:
   MONGO_URI: 'mongodb+srv://supercluster.d83jj.mongodb.net/superData'
   MONGO_USERNAME: ${{ vars.MONGO_USERNAME }}
   MONGO_PASSWORD: ${{ secrets.MONGO_PASSWORD }}
- 
+
 jobs:
   unit-testing:
     name: Unit Testing
@@ -20,7 +20,7 @@ jobs:
         image: siddharth67/mongo-db:non-prod
         ports:
           - 27017:27017
-    env:
+    env: # These environment variables are specific to the unit-testing job's services
       MONGO_URI: 'mongodb://localhost:27017/superData'
       MONGO_USERNAME: non-prod-user
       MONGO_PASSWORD: non-prod-password
@@ -35,31 +35,31 @@ jobs:
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v4
- 
+
       - name: Setup NodeJS Version ${{ matrix.version }}
         uses: actions/setup-node@v3
         with:
           node-version: ${{ matrix.version }}
- 
+
       - name: Cache NPM Dependencies
         uses: actions/cache@v3
         with:
           path: node_modules
           key: ${{ runner.os }}-node-modules-${{ hashFiles('package-lock.json') }}
- 
+
       - name: Install Dependencies
         run: npm install
- 
+
       - name: Run Unit Tests
         run: npm test
- 
+
       - name: Archive Test Result
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: Mocha-Test-Result-${{ matrix.os }}-node${{ matrix.version }}
           path: test-results.xml
- 
+
   code-coverage:
     name: Code Coverage
     container:
@@ -69,107 +69,120 @@ jobs:
         image: siddharth67/mongo-db:non-prod
         options:
           --name mongo
-    env:
+    env: # These environment variables are specific to the code-coverage job's services
       MONGO_URI: 'mongodb://mongo:27017/superData'
       MONGO_USERNAME: non-prod-user
-      MONGO_PASSWORD: non-prod-password    
+      MONGO_PASSWORD: non-prod-password
     runs-on: ubuntu-latest
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v4
- 
+
       - name: Cache NPM Dependencies
         uses: actions/cache@v3
         with:
           path: node_modules
           key: ${{ runner.os }}-node-modules-${{ hashFiles('package-lock.json') }}
- 
+
       - name: Install Dependencies
         run: npm install
- 
+
       - name: Run Coverage
         continue-on-error: true
         run: npm run coverage
- 
+
       - name: Archive Code Coverage Result
         uses: actions/upload-artifact@v4
         with:
           name: Code-Coverage-Result
           path: coverage
           retention-days: 5
- 
+
   docker-build-test-push:
     name: Docker Build, Test & Push
     permissions:
-      packages: write
+      packages: write # Required for pushing to GHCR
+      contents: read # Required for actions/checkout
     runs-on: ubuntu-latest
     needs: [unit-testing, code-coverage]
     env:
-      LOWER_REPO_OWNER: ''
+      # LOWER_REPO_OWNER will be set by the 'Set lowercase repo owner' step
+      # and then available as env.LOWER_REPO_OWNER
+      TEMP_LOWER_REPO_OWNER: '' # Placeholder, actual value set in a step
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v4
- 
+
+      # Set lowercase repo owner for GHCR tag
       - name: Set lowercase repo owner
-        id: lowercase
-        run: echo "LOWER_REPO_OWNER=${GITHUB_REPOSITORY_OWNER,,}" >> $GITHUB_ENV
- 
+        id: lowercase_owner_step
+        run: echo "LOWER_REPO_OWNER=$(echo '${{ github.repository_owner }}' | tr '[:upper:]' '[:lower:]')" >> "$GITHUB_ENV"
+
       - name: DockerHub Login
         uses: docker/login-action@v2
         with:
           username: ${{ vars.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_PASSWORD }}
- 
+
       - name: GHCR Login
         uses: docker/login-action@v2
         with:
           registry: ghcr.io
           username: ${{ github.repository_owner }}
-          password: ${{ secrets.PERSONAL_TOKEN }}
- 
+          password: ${{ secrets.GITHUB_TOKEN }} # Using GITHUB_TOKEN for GHCR
+
       - name: Build Docker Image
         uses: docker/build-push-action@v6
         with:
           context: .
-          push: false
+          push: false # Only build for testing here
           tags: ${{ vars.DOCKERHUB_USERNAME }}/solar-system:${{ github.sha }}
- 
+
       - name: Test Docker Image
         run: |
           docker run --name solar-system-app -d -p 3000:3000 \
-            -e MONGO_URI=$MONGO_URI \
-            -e MONGO_USERNAME=$MONGO_USERNAME \
-            -e MONGO_PASSWORD=$MONGO_PASSWORD \
+            -e MONGO_URI="${{ env.MONGO_URI }}" \
+            -e MONGO_USERNAME="${{ env.MONGO_USERNAME }}" \
+            -e MONGO_PASSWORD="${{ env.MONGO_PASSWORD }}" \
             ${{ vars.DOCKERHUB_USERNAME }}/solar-system:${{ github.sha }}
           echo "Waiting for container to start..."
           sleep 15
           wget -q -O - 127.0.0.1:3000/live | grep live
           docker stop solar-system-app
           docker rm solar-system-app
- 
+
       - name: Container Registry Push
         uses: docker/build-push-action@v6
         with:
           context: .
-          push: true
+          push: true # Push to registries
           tags: |
             ${{ vars.DOCKERHUB_USERNAME }}/solar-system:${{ github.sha }}
             ghcr.io/${{ env.LOWER_REPO_OWNER }}/solar-system:${{ github.sha }}
-          load: false
- 
+          # No 'load: false' needed here as the image is pushed and not necessarily used locally after this step
+          # If you need to use the image locally in a *subsequent step within the same job*, you might need 'load: true'
+
   deploy-to-azure:
     name: Deploy to Azure Web App
     runs-on: ubuntu-latest
-    needs: docker-build-test-push
+    needs: docker-build-test-push # Ensure Docker image is built and pushed before deploying
+    environment: production # Good practice to specify environment for deployments
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v4
- 
+
+      # Authenticate to Azure using a Service Principal (recommended)
+      # You need to set up AZURE_CREDENTIALS as a secret in your GitHub repo
+      # For more info: https://docs.microsoft.com/en-us/azure/developer/github/connect-from-github?tabs=azure-portal%2Cwindows
+      - name: Azure Login
+        uses: azure/login@v1
+        with:
+          creds: ${{ secrets.AZURE_CREDENTIALS }}
+
       - name: Deploy to Azure Web App
         uses: azure/webapps-deploy@v2
         with:
-          app-name: Solar-System5     # your Azure Web App name
-          publish-profile: ${{ secrets.PROFILE }}
-          images: ${{ vars.DOCKERHUB_USERNAME }}/solar-system:${{ github.sha }}
-          slot-name: production
- 
+          app-name: Solar-System5 # your Azure Web App name
+          # publish-profile: ${{ secrets.PROFILE }} # publish-profile is an alternative to azure/login
+          images: ${{ vars.DOCKERHUB_USERNAME }}/solar-system:${{ github.sha }} # Use the Docker Hub image
+          slot-name: production # Deploy to the production slot
