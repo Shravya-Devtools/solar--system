@@ -1,4 +1,4 @@
-name: service container
+name: Solar System Workflow
 
 on:
   workflow_dispatch:
@@ -15,15 +15,6 @@ env:
 jobs:
   unit-testing:
     name: Unit Testing
-    services:
-      mongo-db:
-        image: siddharth67/mongo-db:non-prod
-        ports:
-          - 27017:27017
-    env: # These environment variables are specific to the unit-testing job's services
-      MONGO_URI: 'mongodb://localhost:27017/superData'
-      MONGO_USERNAME: non-prod-user
-      MONGO_PASSWORD: non-prod-password
     strategy:
       matrix:
         version: [18, 19]
@@ -62,21 +53,15 @@ jobs:
 
   code-coverage:
     name: Code Coverage
-    container:
-      image: node:18
-    services:
-      mongo-db:
-        image: siddharth67/mongo-db:non-prod
-        options:
-          --name mongo
-    env: # These environment variables are specific to the code-coverage job's services
-      MONGO_URI: 'mongodb://mongo:27017/superData'
-      MONGO_USERNAME: non-prod-user
-      MONGO_PASSWORD: non-prod-password
     runs-on: ubuntu-latest
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v4
+
+      - name: Setup NodeJS Version 18
+        uses: actions/setup-node@v3
+        with:
+          node-version: 18
 
       - name: Cache NPM Dependencies
         uses: actions/cache@v3
@@ -98,25 +83,14 @@ jobs:
           path: coverage
           retention-days: 5
 
-  docker-build-test-push:
-    name: Docker Build, Test & Push
-    permissions:
-      packages: write # Required for pushing to GHCR
-      contents: read # Required for actions/checkout
+  docker-build-test:
+    name: Docker Build, Test 
     runs-on: ubuntu-latest
     needs: [unit-testing, code-coverage]
-    env:
-      # LOWER_REPO_OWNER will be set by the 'Set lowercase repo owner' step
-      # and then available as env.LOWER_REPO_OWNER
-      TEMP_LOWER_REPO_OWNER: '' # Placeholder, actual value set in a step
+
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v4
-
-      # Set lowercase repo owner for GHCR tag
-      - name: Set lowercase repo owner
-        id: lowercase_owner_step
-        run: echo "LOWER_REPO_OWNER=$(echo '${{ github.repository_owner }}' | tr '[:upper:]' '[:lower:]')" >> "$GITHUB_ENV"
 
       - name: DockerHub Login
         uses: docker/login-action@v2
@@ -124,65 +98,44 @@ jobs:
           username: ${{ vars.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_PASSWORD }}
 
-      - name: GHCR Login
-        uses: docker/login-action@v2
-        with:
-          registry: ghcr.io
-          username: ${{ github.repository_owner }}
-          password: ${{ secrets.GITHUB_TOKEN }} # Using GITHUB_TOKEN for GHCR
-
       - name: Build Docker Image
         uses: docker/build-push-action@v6
         with:
           context: .
-          push: false # Only build for testing here
+          push: false
           tags: ${{ vars.DOCKERHUB_USERNAME }}/solar-system:${{ github.sha }}
 
       - name: Test Docker Image
         run: |
           docker run --name solar-system-app -d -p 3000:3000 \
-            -e MONGO_URI="${{ env.MONGO_URI }}" \
-            -e MONGO_USERNAME="${{ env.MONGO_USERNAME }}" \
-            -e MONGO_PASSWORD="${{ env.MONGO_PASSWORD }}" \
+            -e MONGO_URI=$MONGO_URI \
+            -e MONGO_USERNAME=$MONGO_USERNAME \
+            -e MONGO_PASSWORD=$MONGO_PASSWORD \
             ${{ vars.DOCKERHUB_USERNAME }}/solar-system:${{ github.sha }}
           echo "Waiting for container to start..."
           sleep 15
           wget -q -O - 127.0.0.1:3000/live | grep live
-          docker stop solar-system-app
-          docker rm solar-system-app
 
-      - name: Container Registry Push
+      - name: Push Docker Image
         uses: docker/build-push-action@v6
         with:
           context: .
-          push: true # Push to registries
-          tags: |
-            ${{ vars.DOCKERHUB_USERNAME }}/solar-system:${{ github.sha }}
-            ghcr.io/${{ env.LOWER_REPO_OWNER }}/solar-system:${{ github.sha }}
-          # No 'load: false' needed here as the image is pushed and not necessarily used locally after this step
-          # If you need to use the image locally in a *subsequent step within the same job*, you might need 'load: true'
+          push: true
+          tags: ${{ vars.DOCKERHUB_USERNAME }}/solar-system:${{ github.sha }}
+          load: false
 
   deploy-to-azure:
     name: Deploy to Azure Web App
     runs-on: ubuntu-latest
-    needs: docker-build-test-push # Ensure Docker image is built and pushed before deploying
-    environment: production # Good practice to specify environment for deployments
+    needs: docker-build-test
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v4
 
-      # Authenticate to Azure using a Service Principal (recommended)
-      # You need to set up AZURE_CREDENTIALS as a secret in your GitHub repo
-      # For more info: https://docs.microsoft.com/en-us/azure/developer/github/connect-from-github?tabs=azure-portal%2Cwindows
-      - name: Azure Login
-        uses: azure/login@v1
-        with:
-          creds: ${{ secrets.AZURE_CREDENTIALS }}
-
       - name: Deploy to Azure Web App
         uses: azure/webapps-deploy@v2
         with:
-          app-name: DEPLOY1 # your Azure Web App name
-          # publish-profile: ${{ secrets.AZURE_WEBAPP_PUBLISH_PROFILE }} # publish-profile is an alternative to azure/login
-          images: ${{ vars.DOCKERHUB_USERNAME }}/solar-system:${{ github.sha }} # Use the Docker Hub image
-          slot-name: production # Deploy to the production slot
+          app-name: APP-SERVICE                     # Replace with your Azure Web App name
+          publish-profile: ${{ secrets.DOWNLOADED_PROFILE}}
+          images: ${{ vars.DOCKERHUB_USERNAME }}/solar-system:${{ github.sha }}
+          slot-name: production
