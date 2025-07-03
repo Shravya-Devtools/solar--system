@@ -50,7 +50,7 @@ jobs:
         id: deploy-to-webapp
         uses: azure/webapps-deploy@v3
         with:
-          app-name: 'Solar-System5'
+          app-name: 'APP-SERVICE'
           slot-name: 'Production'
           package: .
-          publish-profile: ${{ secrets.AZUREAPPSERVICE_PUBLISHPROFILE_E2FC97B80AEE45D5B20600C114A5CAF3 }}
+          publish-profile: ${{ secrets.PROFILE_E2FC97B80AEE45D5B20600C114A5CAF3 }}
